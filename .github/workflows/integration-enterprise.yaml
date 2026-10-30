@@ -1,0 +1,127 @@
+name: Enterprise Integration Test
+
+concurrency:
+  # Run only for most recent commit in PRs but for all tags and commits on main
+  # Ref: https://docs.github.com/en/actions/using-jobs/using-concurrency
+  group: ${{ github.workflow }}-${{ github.head_ref || github.sha }}
+  cancel-in-progress: true
+
+on:
+  push:
+    branches:
+    - main
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+jobs:
+  integration:
+    # Skip if the PR has the 'skip-ee' label
+    if: ${{ github.event_name == 'push' || !contains(github.event.pull_request.labels.*.name, 'skip-ee') }}
+    timeout-minutes: ${{ fromJSON(vars.DECK_WORKFLOW_GW_TIMEOUT || '10') }}
+    strategy:
+      matrix:
+        kong_image:
+        - 'kong/kong-gateway:2.8'
+        - 'kong/kong-gateway:3.4'
+        - 'kong/kong-gateway:3.5'
+        - 'kong/kong-gateway:3.6'
+        - 'kong/kong-gateway:3.7'
+        - 'kong/kong-gateway:3.8'
+        - 'kong/kong-gateway:3.9'
+        - 'kong/kong-gateway:3.10'
+        - 'kong/kong-gateway:3.11'
+        - 'kong/kong-gateway:3.12'
+        - 'kong/kong-gateway:3.13'
+        - 'kong/kong-gateway:3.14'
+        - 'kong/kong-gateway:3.15'
+        - 'kong/kong-gateway:3.16'
+        - 'kong/kong-gateway-dev:latest'
+        router_flavor:
+          - 'traditional_compatible'
+          - 'expressions'
+    env:
+      KONG_ANONYMOUS_REPORTS: "off"
+      KONG_IMAGE: ${{ matrix.kong_image }}
+      KONG_ROUTER_FLAVOR: ${{ matrix.router_flavor }}
+
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
+        with:
+          egress-policy: audit
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Setup go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Login to Docker Hub
+        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef
+        with:
+          username: ${{secrets.DOCKER_ORG_NAME}}
+          password: ${{secrets.DOCKER_ORG_TOKEN}}
+      - uses: Kong/kong-license@ddccb487a0b319cef85f348b16a1ad2b6d9c1df7 # master
+        id: license
+        with:
+          op-token: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+      - name: Setup Kong
+        env:
+          KONG_LICENSE_DATA: ${{ steps.license.outputs.license }}
+        run: make setup-kong-ee
+      - name: Run integration tests
+        env:
+          KONG_LICENSE_DATA: ${{ steps.license.outputs.license }}
+        run: make test-integration
+        continue-on-error: ${{ matrix.kong_image == 'kong/kong-gateway-dev:latest' }}
+
+  integration-rbac:
+    # Skip if the PR has the 'skip-ee' label
+    if: ${{ github.event_name == 'push' || !contains(github.event.pull_request.labels.*.name, 'skip-ee') }}
+    timeout-minutes: ${{ fromJSON(vars.DECK_WORKFLOW_GW_TIMEOUT || '10') }}
+    strategy:
+      matrix:
+        kong_image:
+        - 'kong/kong-gateway:2.8'
+        - 'kong/kong-gateway:3.4'
+        - 'kong/kong-gateway:3.10'
+        - 'kong/kong-gateway:3.14'
+        - 'kong/kong-gateway:3.16'
+        - 'kong/kong-gateway-dev:latest'
+    env:
+      KONG_ANONYMOUS_REPORTS: "off"
+      KONG_IMAGE: ${{ matrix.kong_image }}
+      KONG_ENFORCE_RBAC: 'on'
+      KONG_PASSWORD: 'kong_admin_token'
+      KONG_ADMIN_TOKEN: 'kong_admin_token'
+
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
+        with:
+          egress-policy: audit
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Setup go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Login to Docker Hub
+        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef
+        with:
+          username: ${{secrets.DOCKER_ORG_NAME}}
+          password: ${{secrets.DOCKER_ORG_TOKEN}}
+      - uses: Kong/kong-license@ddccb487a0b319cef85f348b16a1ad2b6d9c1df7 # master
+        id: license
+        with:
+          op-token: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+      - name: Setup Kong
+        env:
+          KONG_LICENSE_DATA: ${{ steps.license.outputs.license }}
+        run: make setup-kong-ee
+      - name: Run RBAC admin-token integration test
+        env:
+          KONG_LICENSE_DATA: ${{ steps.license.outputs.license }}
+        run: make test-integration GOTESTFLAGS='-run Test_RBAC_AdminToken'
+        continue-on-error: ${{ matrix.kong_image == 'kong/kong-gateway-dev:latest' }}

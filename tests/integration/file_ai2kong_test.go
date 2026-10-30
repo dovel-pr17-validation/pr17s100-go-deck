@@ -1,0 +1,123 @@
+//go:build integration
+
+package integration
+
+import (
+	"os"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"sigs.k8s.io/yaml"
+)
+
+func Test_FileAI2Kong(t *testing.T) {
+	skipWhenKonnect(t)
+	tests := []struct {
+		name               string
+		inputFile          string
+		expectedOutputFile string
+	}{
+		{
+			name:               "convert AI gateway config to Kong gateway config",
+			inputFile:          "testdata/file_ai2kong/01-models/input.yaml",
+			expectedOutputFile: "testdata/file_ai2kong/01-models/output.yaml",
+		},
+		{
+			name:               "convert AI gateway config to Kong gateway config",
+			inputFile:          "testdata/file_ai2kong/02-identity-and-policies/input.yaml",
+			expectedOutputFile: "testdata/file_ai2kong/02-identity-and-policies/output.yaml",
+		},
+		{
+			name:               "convert AI gateway config to Kong gateway config",
+			inputFile:          "testdata/file_ai2kong/03-agents/input.yaml",
+			expectedOutputFile: "testdata/file_ai2kong/03-agents/output.yaml",
+		},
+		{
+			name:               "convert AI gateway config to Kong gateway config",
+			inputFile:          "testdata/file_ai2kong/04-mcp/input.yaml",
+			expectedOutputFile: "testdata/file_ai2kong/04-mcp/output.yaml",
+		},
+		{
+			name:               "convert AI gateway config to Kong gateway config",
+			inputFile:          "testdata/file_ai2kong/05-auth-strategies/input.yaml",
+			expectedOutputFile: "testdata/file_ai2kong/05-auth-strategies/output.yaml",
+		},
+		{
+			name:               "convert AI gateway config with certificate and SNI to Kong gateway config",
+			inputFile:          "testdata/file_ai2kong/06-certificate-and-sni/input.yaml",
+			expectedOutputFile: "testdata/file_ai2kong/06-certificate-and-sni/output.yaml",
+		},
+		{
+			name:               "convert AI gateway config with CA certificates to Kong gateway config",
+			inputFile:          "testdata/file_ai2kong/07-ca-certificates/input.yaml",
+			expectedOutputFile: "testdata/file_ai2kong/07-ca-certificates/output.yaml",
+		},
+		{
+			name:               "convert AI gateway 2.1 config with model cost lists to Kong gateway config",
+			inputFile:          "testdata/file_ai2kong/08-model-cost-lists/input.yaml",
+			expectedOutputFile: "testdata/file_ai2kong/08-model-cost-lists/output.yaml",
+		},
+		{
+			name:               "convert AI gateway 2.1 config with MCP protocol fields to Kong gateway config",
+			inputFile:          "testdata/file_ai2kong/09-mcp-protocol-2-1-fields/input.yaml",
+			expectedOutputFile: "testdata/file_ai2kong/09-mcp-protocol-2-1-fields/output.yaml",
+		},
+		{
+			name:               "convert AI gateway 2.1 config with an auth strategy bearer header to Kong gateway config",
+			inputFile:          "testdata/file_ai2kong/10-auth-strategy-bearer-header/input.yaml",
+			expectedOutputFile: "testdata/file_ai2kong/10-auth-strategy-bearer-header/output.yaml",
+		},
+		{
+			name:               "convert AI gateway 2.1 config with policy conditions to Kong gateway config",
+			inputFile:          "testdata/file_ai2kong/11-policy-condition/input.yaml",
+			expectedOutputFile: "testdata/file_ai2kong/11-policy-condition/output.yaml",
+		},
+		{
+			name:               "convert AI gateway 2.2 config with a skills API model to Kong gateway config",
+			inputFile:          "testdata/file_ai2kong/12-skills-api/input.yaml",
+			expectedOutputFile: "testdata/file_ai2kong/12-skills-api/output.yaml",
+		},
+		{
+			name:               "convert AI gateway 2.2 config with the passthrough format to Kong gateway config",
+			inputFile:          "testdata/file_ai2kong/13-passthrough-format/input.yaml",
+			expectedOutputFile: "testdata/file_ai2kong/13-passthrough-format/output.yaml",
+		},
+		{
+			name:               "convert AI gateway 2.2 config with a typesafe provider decisions model to Kong gateway config",
+			inputFile:          "testdata/file_ai2kong/14-typesafe-decisions/input.yaml",
+			expectedOutputFile: "testdata/file_ai2kong/14-typesafe-decisions/output.yaml",
+		},
+		{
+			name:               "convert AI gateway 2.2 config with a typesafe provider decisions model with multiple aliases",
+			inputFile:          "testdata/file_ai2kong/15-typesafe-decisions-multi-alias/input.yaml",
+			expectedOutputFile: "testdata/file_ai2kong/15-typesafe-decisions-multi-alias/output.yaml",
+		},
+		{
+			name:               "convert AI gateway 2.2 config with a custom policy to Kong gateway config",
+			inputFile:          "testdata/file_ai2kong/16-custom-policy/input.yaml",
+			expectedOutputFile: "testdata/file_ai2kong/16-custom-policy/output.yaml",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			output, err := fileAI2Kong("-s", tc.inputFile)
+
+			require.NoError(t, err)
+
+			var expectedOutput interface{}
+			var currentOutput interface{}
+
+			content, err := os.ReadFile(tc.expectedOutputFile)
+			require.NoError(t, err)
+
+			err = yaml.Unmarshal(content, &expectedOutput)
+			require.NoError(t, err)
+
+			err = yaml.Unmarshal([]byte(output), &currentOutput)
+			require.NoError(t, err)
+
+			assert.Equal(t, expectedOutput, currentOutput)
+		})
+	}
+}

@@ -1,0 +1,21 @@
+_format_version: "3.0"
+plugins:
+  - name: openid-connect
+    config:
+      extra_jwks_uris:
+      - https://foo.com/baz
+      - https://foo.com/bar
+      issuer: https://test.com
+      cache_tokens_salt: 5CjRldqVE1mQtsunhqKGAAA4U3big9Xc
+  - config:
+      bootstrap_servers:
+      - host: foo-2.bar.com
+        port: 9096
+      - host: foo-3.bar.com
+        port: 9096
+      - host: foo-1.bar.com
+        port: 9096
+      cluster_name: foo
+      topic: foo
+    enabled: true
+    name: kafka-log

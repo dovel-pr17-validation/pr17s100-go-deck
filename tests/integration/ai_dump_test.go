@@ -1,0 +1,252 @@
+//go:build integration
+
+package integration
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
+	"github.com/kong/go-database-reconciler/pkg/file"
+	"github.com/kong/go-kong/kong"
+	"github.com/stretchr/testify/require"
+)
+
+// test scope:
+//
+//   - AI Gateway >=2.0.0
+//
+// Test_Dump_AIModels verifies `deck gateway dump` round-trips the ai_model
+// entity: after seeding Kong with ai_models, the dumped file must contain the
+// same entities. ai_model is only available on AI Gateway instances.
+func Test_Dump_AIModels(t *testing.T) {
+	runWhenAIGateway(t, ">=2.0.0")
+	setup(t)
+
+	ctx := context.Background()
+
+	// ID and CreatedAt/UpdatedAt are server-assigned, so they are ignored.
+	cmpOpts := []cmp.Option{
+		cmpopts.IgnoreFields(kong.AIModel{}, "ID", "CreatedAt", "UpdatedAt"),
+		cmpopts.SortSlices(func(a, b file.FAIModel) bool { return *a.Name < *b.Name }),
+		cmpopts.SortSlices(func(a, b *string) bool { return *a < *b }),
+		cmpopts.EquateEmpty(),
+	}
+
+	expected := []file.FAIModel{
+		{
+			AIModel: kong.AIModel{
+				Name:  kong.String("gpt-5"),
+				Alias: kong.String("@openai/gpt-5"),
+			},
+		},
+		{
+			AIModel: kong.AIModel{
+				Name:  kong.String("claude-opus"),
+				Alias: kong.String("@anthropic/claude-opus"),
+				Tags:  kong.StringSlice("ai", "anthropic"),
+			},
+		},
+	}
+
+	reset(t)
+	require.NoError(t, sync(ctx, "testdata/sync/056-ai-models/kong.yaml"))
+
+	output, err := dump("-o", "-")
+	require.NoError(t, err)
+
+	content := parseAIState(t, output)
+	if diff := cmp.Diff(content.AIModels, expected, cmpOpts...); diff != "" {
+		t.Errorf("unexpected ai_models dump diff:\n%s", diff)
+	}
+}
+
+// aiDumpTestCase describes one AI Gateway feature exercised by Test_AIDump: the
+// AI-native source to seed Kong with, and whether its ai dump round-trip is
+// expected to converge.
+type aiDumpTestCase struct {
+	name          string
+	inputFile     string
+	skipRoundTrip bool
+}
+
+// runAIDumpCases exercises `deck ai dump`, which reads the AI-managed entities
+// (tagged 'managed_by:deck-ai') from Kong and reverts them back to AI Gateway
+// format.
+//
+// `deck ai dump` does not reproduce the original source file byte-for-byte (it
+// fills defaults, renames providers, and drops presentation-only fields), so
+// there is no static fixture to compare against. Instead we assert the property
+// that matters: `ai dump` is a faithful inverse of `ai sync`. After seeding Kong
+// from an AI Gateway source, the dumped configuration must, when synced again,
+// reproduce exactly the same AI-managed Kong state. If `ai dump` dropped or
+// mangled any entity, the round-tripped state would diverge.
+//
+// State is compared via `deck gateway dump` (scoped to the managed_by:deck-ai
+// tag, IDs stripped) using the same structural comparison as Test_AISync.
+func runAIDumpCases(t *testing.T, tests []aiDumpTestCase) {
+	t.Helper()
+	ctx := context.Background()
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Seed Kong from the AI Gateway source and capture the resulting
+			// AI-managed state as the reference.
+			reset(t)
+			require.NoError(t, aiSync(ctx, tc.inputFile))
+			reference, err := dump("--select-tag", managedByAIDeckTag, "-o", "-")
+			require.NoError(t, err)
+
+			// `ai dump` reverts the state back to AI Gateway format.
+			aiConfig, err := aiDump("-o", "-")
+			require.NoError(t, err)
+			require.NotEmpty(t, aiConfig)
+
+			// Round-trip: syncing the dumped AI Gateway config into a fresh Kong
+			// must reproduce the same AI-managed state.
+			if !tc.skipRoundTrip {
+				roundTripFile := filepath.Join(t.TempDir(), "ai-dump.yaml")
+				require.NoError(t, os.WriteFile(roundTripFile, []byte(aiConfig), 0o600))
+
+				reset(t)
+				require.NoError(t, aiSync(ctx, roundTripFile))
+				roundTripped, err := dump("--select-tag", managedByAIDeckTag, "-o", "-")
+				require.NoError(t, err)
+
+				assertAIStateEqual(t, reference, roundTripped)
+			}
+		})
+	}
+}
+
+func Test_AIDump(t *testing.T) {
+	runWhenAIGateway(t, ">=2.0.0")
+	setup(t)
+
+	runAIDumpCases(t, []aiDumpTestCase{
+		{
+			name:      "models",
+			inputFile: "testdata/file_ai2kong/01-models/input.yaml",
+		},
+		{
+			name:      "identity and policies",
+			inputFile: "testdata/file_ai2kong/02-identity-and-policies/input.yaml",
+		},
+		{
+			name:      "agents",
+			inputFile: "testdata/file_ai2kong/03-agents/input.yaml",
+		},
+		{
+			name:      "mcp",
+			inputFile: "testdata/file_ai2kong/04-mcp/input.yaml",
+		},
+		{
+			name:      "auth strategies",
+			inputFile: "testdata/file_ai2kong/05-auth-strategies/input.yaml",
+		},
+		{
+			name:          "certificate and SNI",
+			inputFile:     "testdata/file_ai2kong/06-certificate-and-sni/input.yaml",
+			skipRoundTrip: false,
+		},
+		{
+			name:          "ca certificates",
+			inputFile:     "testdata/file_ai2kong/07-ca-certificates/input.yaml",
+			skipRoundTrip: true,
+		},
+	})
+}
+
+// Test_AIDump_AIGateway21 covers the AI Gateway 2.1 fields that have an AI
+// Gateway entity-model representation. It is split out from Test_AIDump so the
+// 2.0.x image, whose plugin schemas reject those fields, skips it.
+func Test_AIDump_AIGateway21(t *testing.T) {
+	runWhenAIGateway(t, ">=2.1.0")
+	setup(t)
+
+	runAIDumpCases(t, []aiDumpTestCase{
+		{
+			name:      "model cost lists",
+			inputFile: "testdata/file_ai2kong/08-model-cost-lists/input.yaml",
+		},
+		{
+			name:      "mcp protocol 2.1 fields",
+			inputFile: "testdata/file_ai2kong/09-mcp-protocol-2-1-fields/input.yaml",
+		},
+		{
+			name:      "auth strategy bearer header",
+			inputFile: "testdata/file_ai2kong/10-auth-strategy-bearer-header/input.yaml",
+		},
+		{
+			name:      "policy condition",
+			inputFile: "testdata/file_ai2kong/11-policy-condition/input.yaml",
+		},
+	})
+}
+
+func Test_AIDump_AIGateway22(t *testing.T) {
+	runWhenAIGateway(t, ">=2.2.0")
+	setup(t)
+
+	runAIDumpCases(t, []aiDumpTestCase{
+		{
+			name:      "skills api",
+			inputFile: "testdata/file_ai2kong/12-skills-api/input.yaml",
+		},
+		{
+			name:      "passthrough format",
+			inputFile: "testdata/file_ai2kong/13-passthrough-format/input.yaml",
+		},
+		{
+			name:      "typesafe provider decisions",
+			inputFile: "testdata/file_ai2kong/14-typesafe-decisions/input.yaml",
+		},
+		{
+			name:      "typesafe provider decisions with multiple aliases",
+			inputFile: "testdata/file_ai2kong/15-typesafe-decisions-multi-alias/input.yaml",
+		},
+	})
+}
+
+// Test_AIDump_CustomPolicy covers reverting a custom plugin definition (and the
+// plugin instance referencing it) back to an AI Gateway custom_policies entry.
+// As in Test_AISync_CustomPolicy, the definition (custom-policy.yaml) is synced
+// and given pluginDefinitionSyncDelay to register with Kong before the
+// referencing plugin instance (policy.yaml) is synced.
+func Test_AIDump_CustomPolicy(t *testing.T) {
+	runWhenAIGateway(t, ">=2.2.0")
+	setup(t)
+
+	ctx := context.Background()
+	const (
+		customPolicyFile = "testdata/file_ai2kong/16-custom-policy/custom-policy.yaml"
+		policyFile       = "testdata/file_ai2kong/16-custom-policy/policy.yaml"
+	)
+
+	reset(t)
+	require.NoError(t, aiSync(ctx, customPolicyFile, "--include-policy-definitions"))
+	time.Sleep(pluginDefinitionSyncDelay)
+	require.NoError(t, aiSync(ctx, policyFile, "--include-policy-definitions"))
+	reference, err := dump("--select-tag", managedByAIDeckTag, "-o", "-", "--include-plugin-definitions")
+	require.NoError(t, err)
+
+	aiConfig, err := aiDump("-o", "-", "--include-policy-definitions")
+	require.NoError(t, err)
+	require.NotEmpty(t, aiConfig)
+
+	roundTripFile := filepath.Join(t.TempDir(), "ai-dump.yaml")
+	require.NoError(t, os.WriteFile(roundTripFile, []byte(aiConfig), 0o600))
+
+	reset(t)
+	require.NoError(t, aiSync(ctx, customPolicyFile, "--include-policy-definitions"))
+	time.Sleep(pluginDefinitionSyncDelay)
+	require.NoError(t, aiSync(ctx, roundTripFile, "--include-policy-definitions"))
+	roundTripped, err := dump("--select-tag", managedByAIDeckTag, "-o", "-", "--include-plugin-definitions")
+	require.NoError(t, err)
+
+	assertAIStateEqual(t, reference, roundTripped)
+}

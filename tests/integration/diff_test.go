@@ -1,0 +1,1556 @@
+//go:build integration
+
+package integration
+
+import (
+	"context"
+	"os"
+	"strings"
+	"testing"
+
+	"github.com/kong/go-database-reconciler/pkg/utils"
+	"github.com/kong/go-kong/kong"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+var (
+	emptyOutput = `Summary:
+  Created: 0
+  Updated: 0
+  Deleted: 0
+`
+
+	expectedOutputMasked = `updating service svc1  {
+   "connect_timeout": 60000,
+   "enabled": true,
+   "host": "[masked]",
+   "id": "9ecf5708-f2f4-444e-a4c7-fcd3a57f9a6d",
+   "name": "svc1",
+   "port": 80,
+   "protocol": "http",
+   "read_timeout": 60000,
+   "retries": 5,
+   "write_timeout": 60000
++  "tags": [
++    "[masked] is an external host. I like [masked]!",
++    "foo:foo",
++    "baz:[masked]",
++    "another:[masked]",
++    "bar:[masked]"
++  ]
+ }
+
+creating plugin rate-limiting (global)
+Summary:
+  Created: 1
+  Updated: 1
+  Deleted: 0
+`
+
+	expectedOutputUnMasked = `updating service svc1  {
+   "connect_timeout": 60000,
+   "enabled": true,
+   "host": "mockbin.org",
+   "id": "9ecf5708-f2f4-444e-a4c7-fcd3a57f9a6d",
+   "name": "svc1",
+   "port": 80,
+   "protocol": "http",
+   "read_timeout": 60000,
+   "retries": 5,
+   "write_timeout": 60000
++  "tags": [
++    "test"
++  ]
+ }
+
+creating plugin rate-limiting (global)
+Summary:
+  Created: 1
+  Updated: 1
+  Deleted: 0
+`
+
+	diffEnvVars = map[string]string{
+		"DECK_SVC1_HOSTNAME": "mockbin.org",
+		"DECK_BARR":          "barbar",
+		"DECK_BAZZ":          "bazbaz",   // used more than once
+		"DECK_FUB":           "fubfub",   // unused
+		"DECK_FOO":           "foo_test", // unused, partial match
+	}
+
+	expectedOutputUnMaskedJSON = `{
+	"changes": {
+		"creating": [
+			{
+				"name": "rate-limiting (global)",
+				"kind": "plugin",
+				"body": {
+					"new": {
+						"id": "a1368a28-cb5c-4eee-86d8-03a6bdf94b5e",
+						"name": "rate-limiting",
+						"config": {
+							"day": null,
+							"error_code": 429,
+							"error_message": "API rate limit exceeded",
+							"fault_tolerant": true,
+							"header_name": null,
+							"hide_client_headers": false,
+							"hour": null,
+							"limit_by": "consumer",
+							"minute": 123,
+							"month": null,
+							"path": null,
+							"policy": "local",
+							"redis_database": 0,
+							"redis_host": null,
+							"redis_password": null,
+							"redis_port": 6379,
+							"redis_server_name": null,
+							"redis_ssl": false,
+							"redis_ssl_verify": false,
+							"redis_timeout": 2000,
+							"redis_username": null,
+							"second": null,
+							"year": null
+						},
+						"enabled": true,
+						"protocols": [
+							"grpc",
+							"grpcs",
+							"http",
+							"https"
+						]
+					},
+					"old": null
+				}
+			}
+		],
+		"updating": [
+			{
+				"name": "svc1",
+				"kind": "service",
+				"body": {
+					"new": {
+						"connect_timeout": 60000,
+						"enabled": true,
+						"host": "mockbin.org",
+						"id": "9ecf5708-f2f4-444e-a4c7-fcd3a57f9a6d",
+						"name": "svc1",
+						"port": 80,
+						"protocol": "http",
+						"read_timeout": 60000,
+						"retries": 5,
+						"write_timeout": 60000,
+						"tags": [
+							"test"
+						]
+					},
+					"old": {
+						"connect_timeout": 60000,
+						"enabled": true,
+						"host": "mockbin.org",
+						"id": "9ecf5708-f2f4-444e-a4c7-fcd3a57f9a6d",
+						"name": "svc1",
+						"port": 80,
+						"protocol": "http",
+						"read_timeout": 60000,
+						"retries": 5,
+						"write_timeout": 60000
+					}
+				}
+			}
+		],
+		"deleting": []
+	},
+	"summary": {
+		"creating": 1,
+		"updating": 1,
+		"deleting": 0,
+		"total": 2
+	},
+	"warnings": [],
+	"errors": []
+}
+
+`
+
+	expectedOutputMaskedJSON = `{
+	"changes": {
+		"creating": [
+			{
+				"name": "rate-limiting (global)",
+				"kind": "plugin",
+				"body": {
+					"new": {
+						"id": "a1368a28-cb5c-4eee-86d8-03a6bdf94b5e",
+						"name": "rate-limiting",
+						"config": {
+							"day": null,
+							"error_code": 429,
+							"error_message": "API rate limit exceeded",
+							"fault_tolerant": true,
+							"header_name": null,
+							"hide_client_headers": false,
+							"hour": null,
+							"limit_by": "consumer",
+							"minute": 123,
+							"month": null,
+							"path": null,
+							"policy": "local",
+							"redis_database": 0,
+							"redis_host": null,
+							"redis_password": null,
+							"redis_port": 6379,
+							"redis_server_name": null,
+							"redis_ssl": false,
+							"redis_ssl_verify": false,
+							"redis_timeout": 2000,
+							"redis_username": null,
+							"second": null,
+							"year": null
+						},
+						"enabled": true,
+						"protocols": [
+							"grpc",
+							"grpcs",
+							"http",
+							"https"
+						]
+					},
+					"old": null
+				}
+			}
+		],
+		"updating": [
+			{
+				"name": "svc1",
+				"kind": "service",
+				"body": {
+					"new": {
+						"connect_timeout": 60000,
+						"enabled": true,
+						"host": "[masked]",
+						"id": "9ecf5708-f2f4-444e-a4c7-fcd3a57f9a6d",
+						"name": "svc1",
+						"port": 80,
+						"protocol": "http",
+						"read_timeout": 60000,
+						"retries": 5,
+						"write_timeout": 60000,
+						"tags": [
+							"[masked] is an external host. I like [masked]!",
+							"foo:foo",
+							"baz:[masked]",
+							"another:[masked]",
+							"bar:[masked]"
+						]
+					},
+					"old": {
+						"connect_timeout": 60000,
+						"enabled": true,
+						"host": "[masked]",
+						"id": "9ecf5708-f2f4-444e-a4c7-fcd3a57f9a6d",
+						"name": "svc1",
+						"port": 80,
+						"protocol": "http",
+						"read_timeout": 60000,
+						"retries": 5,
+						"write_timeout": 60000
+					}
+				}
+			}
+		],
+		"deleting": []
+	},
+	"summary": {
+		"creating": 1,
+		"updating": 1,
+		"deleting": 0,
+		"total": 2
+	},
+	"warnings": [],
+	"errors": []
+}
+
+`
+
+	expectedOutputUnMaskedJSON30x = `{
+	"changes": {
+		"creating": [
+			{
+				"name": "rate-limiting (global)",
+				"kind": "plugin",
+				"body": {
+					"new": {
+						"id": "a1368a28-cb5c-4eee-86d8-03a6bdf94b5e",
+						"name": "rate-limiting",
+						"config": {
+							"day": null,
+							"fault_tolerant": true,
+							"header_name": null,
+							"hide_client_headers": false,
+							"hour": null,
+							"limit_by": "consumer",
+							"minute": 123,
+							"month": null,
+							"path": null,
+							"policy": "local",
+							"redis_database": 0,
+							"redis_host": null,
+							"redis_password": null,
+							"redis_port": 6379,
+							"redis_server_name": null,
+							"redis_ssl": false,
+							"redis_ssl_verify": false,
+							"redis_timeout": 2000,
+							"redis_username": null,
+							"second": null,
+							"year": null
+						},
+						"enabled": true,
+						"protocols": [
+							"grpc",
+							"grpcs",
+							"http",
+							"https"
+						]
+					},
+					"old": null
+				}
+			}
+		],
+		"updating": [
+			{
+				"name": "svc1",
+				"kind": "service",
+				"body": {
+					"new": {
+						"connect_timeout": 60000,
+						"enabled": true,
+						"host": "mockbin.org",
+						"id": "9ecf5708-f2f4-444e-a4c7-fcd3a57f9a6d",
+						"name": "svc1",
+						"port": 80,
+						"protocol": "http",
+						"read_timeout": 60000,
+						"retries": 5,
+						"write_timeout": 60000,
+						"tags": [
+							"test"
+						]
+					},
+					"old": {
+						"connect_timeout": 60000,
+						"enabled": true,
+						"host": "mockbin.org",
+						"id": "9ecf5708-f2f4-444e-a4c7-fcd3a57f9a6d",
+						"name": "svc1",
+						"port": 80,
+						"protocol": "http",
+						"read_timeout": 60000,
+						"retries": 5,
+						"write_timeout": 60000
+					}
+				}
+			}
+		],
+		"deleting": []
+	},
+	"summary": {
+		"creating": 1,
+		"updating": 1,
+		"deleting": 0,
+		"total": 2
+	},
+	"warnings": [],
+	"errors": []
+}
+
+`
+
+	expectedOutputMaskedJSON30x = `{
+	"changes": {
+		"creating": [
+			{
+				"name": "rate-limiting (global)",
+				"kind": "plugin",
+				"body": {
+					"new": {
+						"id": "a1368a28-cb5c-4eee-86d8-03a6bdf94b5e",
+						"name": "rate-limiting",
+						"config": {
+							"day": null,
+							"fault_tolerant": true,
+							"header_name": null,
+							"hide_client_headers": false,
+							"hour": null,
+							"limit_by": "consumer",
+							"minute": 123,
+							"month": null,
+							"path": null,
+							"policy": "local",
+							"redis_database": 0,
+							"redis_host": null,
+							"redis_password": null,
+							"redis_port": 6379,
+							"redis_server_name": null,
+							"redis_ssl": false,
+							"redis_ssl_verify": false,
+							"redis_timeout": 2000,
+							"redis_username": null,
+							"second": null,
+							"year": null
+						},
+						"enabled": true,
+						"protocols": [
+							"grpc",
+							"grpcs",
+							"http",
+							"https"
+						]
+					},
+					"old": null
+				}
+			}
+		],
+		"updating": [
+			{
+				"name": "svc1",
+				"kind": "service",
+				"body": {
+					"new": {
+						"connect_timeout": 60000,
+						"enabled": true,
+						"host": "[masked]",
+						"id": "9ecf5708-f2f4-444e-a4c7-fcd3a57f9a6d",
+						"name": "svc1",
+						"port": 80,
+						"protocol": "http",
+						"read_timeout": 60000,
+						"retries": 5,
+						"write_timeout": 60000,
+						"tags": [
+							"[masked] is an external host. I like [masked]!",
+							"foo:foo",
+							"baz:[masked]",
+							"another:[masked]",
+							"bar:[masked]"
+						]
+					},
+					"old": {
+						"connect_timeout": 60000,
+						"enabled": true,
+						"host": "[masked]",
+						"id": "9ecf5708-f2f4-444e-a4c7-fcd3a57f9a6d",
+						"name": "svc1",
+						"port": 80,
+						"protocol": "http",
+						"read_timeout": 60000,
+						"retries": 5,
+						"write_timeout": 60000
+					}
+				}
+			}
+		],
+		"deleting": []
+	},
+	"summary": {
+		"creating": 1,
+		"updating": 1,
+		"deleting": 0,
+		"total": 2
+	},
+	"warnings": [],
+	"errors": []
+}
+
+`
+	expectedOutputRequestTransformerArrayReorder = `updating plugin request-transformer (global)  {
+   "config": {
+     "add": {
+       "body": [
+       ],
+       "headers": [
+       ],
+       "querystring": [
+       ]
+     },
+     "append": {
+       "body": [
+       ],
+       "headers": [
+       ],
+       "querystring": [
+       ]
+     },
+     "http_method": null,
+     "remove": {
+       "body": [
+       ],
+       "headers": [
+       ],
+       "querystring": [
+       ]
+     },
+     "rename": {
+       "body": [
+       ],
+       "headers": [
+         "Authorization:something-else",
+       ],
+       "querystring": [
+       ]
+     },
+     "replace": {
+       "body": [
+       ],
+       "headers": [
+       ],
+       "querystring": [
+       ],
+       "uri": null
+     }
+   },
+   "enabled": true,
+   "id": "bc364672-3032-45e3-aac2-7eb921da8515",
+   "name": "request-transformer",
+   "protocols": [
+     "grpc",
+     "grpcs",
+     "http",
+     "https"
+   ]
+ }
+
+Summary:
+  Created: 0
+  Updated: 1
+  Deleted: 0
+`
+	expectedKonnectWorkspaceMismatchDiff = `Creating workspace 
+creating route route-diff1
+Summary:
+  Created: 1
+  Updated: 0
+  Deleted: 0
+`
+
+	expectedKonnectWorkspaceEntityCreationDiff = `creating route route-diff1
+Summary:
+  Created: 1
+  Updated: 0
+  Deleted: 0
+`
+
+	expectedKonnectWorkspaceCreationDeletionDiff = `creating route route-diff2
+deleting route route-diff1
+Summary:
+  Created: 1
+  Updated: 0
+  Deleted: 1
+`
+
+	expectedKonnectWorkspaceEmptyStateDiff = `deleting route route-diff1
+Summary:
+  Created: 0
+  Updated: 0
+  Deleted: 1
+`
+)
+
+// test scope:
+//   - 1.x
+//   - 2.x
+func Test_Diff_Workspace_OlderThan3x(t *testing.T) {
+	tests := []struct {
+		name          string
+		stateFile     string
+		expectedState utils.KongRawState
+	}{
+		{
+			name:      "diff with not existent workspace doesn't error out",
+			stateFile: "testdata/diff/001-not-existing-workspace/kong.yaml",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			runWhen(t, "kong", "<3.0.0")
+			setup(t)
+
+			_, err := diff(tc.stateFile)
+			require.NoError(t, err)
+		})
+	}
+}
+
+// test scope:
+//   - 3.x
+func Test_Diff_Workspace_NewerThan3x(t *testing.T) {
+	tests := []struct {
+		name          string
+		stateFile     string
+		expectedState utils.KongRawState
+	}{
+		{
+			name:      "diff with not existent workspace doesn't error out",
+			stateFile: "testdata/diff/001-not-existing-workspace/kong3x.yaml",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			runWhen(t, "kong", ">=3.0.0")
+			setup(t)
+
+			_, err := diff(tc.stateFile)
+			require.NoError(t, err)
+		})
+	}
+}
+
+// test scope:
+//   - 2.8.0
+func Test_Diff_Masked_OlderThan3x(t *testing.T) {
+	tests := []struct {
+		name             string
+		initialStateFile string
+		stateFile        string
+		expectedState    utils.KongRawState
+		envVars          map[string]string
+	}{
+		{
+			name:             "env variable are masked",
+			initialStateFile: "testdata/diff/002-mask/initial.yaml",
+			stateFile:        "testdata/diff/002-mask/kong.yaml",
+			envVars:          diffEnvVars,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			for k, v := range tc.envVars {
+				t.Setenv(k, v)
+			}
+			runWhen(t, "kong", "==2.8.0")
+			setup(t)
+
+			// initialize state
+			require.NoError(t, sync(context.Background(), tc.initialStateFile))
+
+			out, err := diff(tc.stateFile)
+			require.NoError(t, err)
+			assert.Equal(t, expectedOutputMasked, out)
+		})
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			for k, v := range tc.envVars {
+				t.Setenv(k, v)
+			}
+			runWhen(t, "kong", "==2.8.0")
+			setup(t)
+
+			// initialize state
+			require.NoError(t, sync(context.Background(), tc.initialStateFile))
+
+			out, err := diff(tc.stateFile, "--json-output")
+			require.NoError(t, err)
+			assert.JSONEq(t, expectedOutputMaskedJSON, out)
+		})
+	}
+}
+
+// test scope:
+//   - 3.x
+func Test_Diff_Masked_NewerThan3x(t *testing.T) {
+	tests := []struct {
+		name             string
+		initialStateFile string
+		stateFile        string
+		expectedState    utils.KongRawState
+		envVars          map[string]string
+	}{
+		{
+			name:             "env variable are masked",
+			initialStateFile: "testdata/diff/002-mask/initial3x.yaml",
+			stateFile:        "testdata/diff/002-mask/kong3x.yaml",
+			envVars:          diffEnvVars,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			for k, v := range tc.envVars {
+				t.Setenv(k, v)
+			}
+			runWhen(t, "kong", ">=3.0.0")
+			setup(t)
+
+			// initialize state
+			require.NoError(t, sync(context.Background(), tc.initialStateFile))
+
+			out, err := diff(tc.stateFile)
+			require.NoError(t, err)
+			assert.Equal(t, expectedOutputMasked, out)
+		})
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			for k, v := range tc.envVars {
+				t.Setenv(k, v)
+			}
+			runWhen(t, "kong", ">=3.0.0 <3.1.0")
+			setup(t)
+
+			// initialize state
+			require.NoError(t, sync(context.Background(), tc.initialStateFile))
+
+			out, err := diff(tc.stateFile, "--json-output")
+			require.NoError(t, err)
+			assert.JSONEq(t, expectedOutputMaskedJSON30x, out)
+		})
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			for k, v := range tc.envVars {
+				t.Setenv(k, v)
+			}
+			runWhen(t, "kong", ">=3.1.0 <3.4.0")
+			setup(t)
+
+			// initialize state
+			require.NoError(t, sync(context.Background(), tc.initialStateFile))
+
+			out, err := diff(tc.stateFile, "--json-output")
+			require.NoError(t, err)
+			assert.JSONEq(t, expectedOutputMaskedJSON, out)
+		})
+	}
+}
+
+// test scope:
+//   - 2.8.0
+func Test_Diff_Unmasked_OlderThan3x(t *testing.T) {
+	tests := []struct {
+		name             string
+		initialStateFile string
+		stateFile        string
+		expectedState    utils.KongRawState
+		envVars          map[string]string
+	}{
+		{
+			name:             "env variable are unmasked",
+			initialStateFile: "testdata/diff/003-unmask/initial.yaml",
+			stateFile:        "testdata/diff/003-unmask/kong.yaml",
+			envVars:          diffEnvVars,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			for k, v := range tc.envVars {
+				t.Setenv(k, v)
+			}
+			runWhen(t, "kong", "==2.8.0")
+			setup(t)
+
+			// initialize state
+			require.NoError(t, sync(context.Background(), tc.initialStateFile))
+
+			out, err := diff(tc.stateFile, "--no-mask-deck-env-vars-value")
+			require.NoError(t, err)
+			assert.Equal(t, expectedOutputUnMasked, out)
+		})
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			for k, v := range tc.envVars {
+				t.Setenv(k, v)
+			}
+			runWhen(t, "kong", "==2.8.0")
+			setup(t)
+
+			// initialize state
+			require.NoError(t, sync(context.Background(), tc.initialStateFile))
+
+			out, err := diff(tc.stateFile, "--no-mask-deck-env-vars-value", "--json-output")
+			require.NoError(t, err)
+			assert.JSONEq(t, expectedOutputUnMaskedJSON, out)
+		})
+	}
+}
+
+// test scope:
+//   - 3.x
+func Test_Diff_Unmasked_NewerThan3x(t *testing.T) {
+	tests := []struct {
+		name             string
+		initialStateFile string
+		stateFile        string
+		expectedState    utils.KongRawState
+		envVars          map[string]string
+	}{
+		{
+			name:             "env variable are unmasked",
+			initialStateFile: "testdata/diff/003-unmask/initial3x.yaml",
+			stateFile:        "testdata/diff/003-unmask/kong3x.yaml",
+			envVars:          diffEnvVars,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			for k, v := range tc.envVars {
+				t.Setenv(k, v)
+			}
+			runWhen(t, "kong", ">=3.0.0")
+			setup(t)
+
+			// initialize state
+			require.NoError(t, sync(context.Background(), tc.initialStateFile))
+
+			out, err := diff(tc.stateFile, "--no-mask-deck-env-vars-value")
+			require.NoError(t, err)
+			assert.Equal(t, expectedOutputUnMasked, out)
+		})
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			for k, v := range tc.envVars {
+				t.Setenv(k, v)
+			}
+			runWhen(t, "kong", ">=3.0.0 <3.1.0")
+			setup(t)
+
+			// initialize state
+			require.NoError(t, sync(context.Background(), tc.initialStateFile))
+
+			out, err := diff(tc.stateFile, "--no-mask-deck-env-vars-value", "--json-output")
+			require.NoError(t, err)
+			assert.JSONEq(t, expectedOutputUnMaskedJSON30x, out)
+		})
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			for k, v := range tc.envVars {
+				t.Setenv(k, v)
+			}
+			runWhen(t, "kong", ">=3.1.0 <3.4.0")
+			setup(t)
+
+			// initialize state
+			require.NoError(t, sync(context.Background(), tc.initialStateFile))
+
+			out, err := diff(tc.stateFile, "--no-mask-deck-env-vars-value", "--json-output")
+			require.NoError(t, err)
+			assert.JSONEq(t, expectedOutputUnMaskedJSON, out)
+		})
+	}
+}
+
+// test scope:
+//   - >=3.5
+func Test_Diff_NoDiffUnorderedArray(t *testing.T) {
+	tests := []struct {
+		name      string
+		stateFile string
+		runWhen   string
+	}{
+		{
+			name:      "no diffs with unordered arrays >=3.5.0 <3.8.0",
+			stateFile: "testdata/diff/004-no-diff-plugin/kong.yaml",
+			runWhen:   ">=3.5.0 <3.8.0",
+		},
+		{
+			name:      "no diffs with unordered arrays >=3.8.0",
+			stateFile: "testdata/diff/004-no-diff-plugin/kong.yaml",
+			runWhen:   ">=3.8.0",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			runWhen(t, "enterprise", tc.runWhen)
+			setup(t)
+
+			// test that the diff command does not return any changes when
+			// array fields are not sorted.
+			require.NoError(t, sync(context.Background(), tc.stateFile, "--timeout", "60"))
+
+			out, err := diff(tc.stateFile)
+			require.NoError(t, err)
+			assert.Equal(t, emptyOutput, out)
+			reset(t)
+		})
+	}
+}
+
+func Test_Diff_Plugin_Protocol_Order_Change(t *testing.T) {
+	setup(t)
+	ctx := context.Background()
+
+	tests := []struct {
+		name             string
+		initialStateFile string
+		stateFile        string
+		expectedDiff     string
+	}{
+		{
+			name:             "syncing and then diffing same file should not show false diff",
+			initialStateFile: "testdata/diff/004-no-diff-plugin/initial-ip-restriction.yaml",
+			stateFile:        "testdata/diff/004-no-diff-plugin/initial-ip-restriction.yaml",
+			expectedDiff:     emptyOutput,
+		},
+		{
+			name:             "changing protocol order should not show diff",
+			initialStateFile: "testdata/diff/004-no-diff-plugin/protocol-initial-order-plugins.yaml",
+			stateFile:        "testdata/diff/004-no-diff-plugin/protocol-reordered-plugins.yaml",
+			expectedDiff:     emptyOutput,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// initialize state
+			require.NoError(t, sync(ctx, tc.initialStateFile))
+
+			out, err := diff(tc.stateFile)
+			require.NoError(t, err)
+			assert.Equal(t, tc.expectedDiff, out)
+		})
+	}
+}
+
+// test scope:
+//   - 3.5
+func Test_Diff_NoDiffCompressedTarget(t *testing.T) {
+	runWhen(t, "kong", ">=3.5.0")
+	setup(t)
+
+	// test that the diff command does not return any changes when
+	// target is a compressed IPv6.
+	stateFile := "testdata/diff/005-no-diff-target/kong.yaml"
+	require.NoError(t, sync(context.Background(), stateFile))
+
+	out, err := diff(stateFile)
+	require.NoError(t, err)
+	assert.Equal(t, emptyOutput, out)
+	reset(t)
+}
+
+func Test_Diff_Consumers_Default_Lookup_Tag(t *testing.T) {
+	runWhenEnterpriseOrKonnect(t, ">=3.0.0")
+
+	// Check if running against Konnect for dual testing
+	isKonnect := os.Getenv("DECK_KONNECT_TOKEN") != ""
+
+	if isKonnect {
+		runDualTestWithSkipDefaults(t, "Test_Diff_Consumers_Default_Lookup_Tag",
+			testDiffConsumersDefaultLookupTagImpl)
+	} else {
+		// For Enterprise: run once
+		testDiffConsumersDefaultLookupTagImpl(t)
+	}
+}
+
+func testDiffConsumersDefaultLookupTagImpl(t *testing.T) {
+	setup(t)
+
+	ctx := context.Background()
+
+	expectedDiff := `creating consumer user2
+creating consumer-group-consumer user2
+Summary:
+  Created: 2
+  Updated: 0
+  Deleted: 0
+`
+
+	// sync consumer-group and consumer-1 file
+	require.NoError(t, sync(ctx, "testdata/sync/015-consumer-groups/kong-cg.yaml"))
+	require.NoError(t, sync(ctx, "testdata/sync/015-consumer-groups/kong-consumer-1.yaml"))
+
+	out, err := diff("testdata/sync/015-consumer-groups/kong-consumer-2.yaml")
+	require.NoError(t, err)
+	assert.Equal(t, expectedDiff, out)
+
+	// sync consumer file 2
+	require.NoError(t, sync(ctx, "testdata/sync/015-consumer-groups/kong-consumer-2.yaml"))
+
+	// diff consumer file 1 again to verify no diff
+	out, err = diff("testdata/sync/015-consumer-groups/kong-consumer-1.yaml")
+	require.NoError(t, err)
+	assert.Equal(t, emptyOutput, out)
+
+	// finally sync consumer file 2 to verify no diff
+	out, err = diff("testdata/sync/015-consumer-groups/kong-consumer-2.yaml")
+	require.NoError(t, err)
+	assert.Equal(t, emptyOutput, out)
+}
+
+func Test_Diff_PluginConfigReorderArraySetValues(t *testing.T) {
+	setup(t)
+	ctx := context.Background()
+
+	tests := []struct {
+		name             string
+		initialStateFile string
+		stateFile        string
+		isDiffExpected   bool
+		expectedDiff     string
+	}{
+		{
+			name:             "Reordering plugin config values of type array should show diff",
+			initialStateFile: "testdata/diff/006-plugin-update/initial-request-transformer-reorder-array.yaml",
+			stateFile:        "testdata/diff/006-plugin-update/final-request-transformer-reorder-array.yaml",
+			isDiffExpected:   true,
+			expectedDiff:     expectedOutputRequestTransformerArrayReorder,
+		},
+		{
+			name:             "Reordering plugin config values of type set should not show diff",
+			initialStateFile: "testdata/diff/006-plugin-update/initial-jwt-reorder-set.yaml",
+			stateFile:        "testdata/diff/006-plugin-update/final-jwt-reorder-set.yaml",
+			isDiffExpected:   false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			reset(t)
+			// initialize state
+			require.NoError(t, sync(ctx, tc.initialStateFile))
+
+			out, err := diff(tc.stateFile)
+			require.NoError(t, err)
+			if tc.isDiffExpected {
+				assert.Equal(t, tc.expectedDiff, out)
+			} else {
+				assert.Equal(t, emptyOutput, out)
+			}
+		})
+	}
+}
+
+// Test_Diff_EmptyArrayPluginConfig_NoPerpetualDiff asserts that a plugin config field explicitly set to an empty
+// array does not produce a diff that never goes away, at any depth of the config tree.
+func Test_Diff_EmptyArrayPluginConfig_NoPerpetualDiff(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name      string
+		stateFile string
+		runWhen   func(t *testing.T)
+	}{
+		{
+			// the fixtures set plugin instance_name, which Kong only supports from 3.2.0.
+			name:      "top-level empty array field",
+			stateFile: "testdata/diff/010-empty-array-plugin-config/kong.yaml",
+			runWhen:   func(t *testing.T) { runWhenKongOrKonnect(t, ">=3.2.0") },
+		},
+		{
+			name:      "empty array field nested inside a record field",
+			stateFile: "testdata/diff/010-empty-array-plugin-config/kong-nested.yaml",
+			runWhen:   func(t *testing.T) { runWhenKongOrKonnect(t, ">=3.6.0") },
+		},
+		{
+			// injection-protection was introduced in 3.9.0.
+			name:      "empty array field on an enterprise plugin",
+			stateFile: "testdata/diff/010-empty-array-plugin-config/kong-enterprise.yaml",
+			runWhen:   func(t *testing.T) { runWhen(t, "enterprise", ">=3.9.0") },
+		},
+		{
+			// Control: string arrays take a different schema-default-filling path than arrays of records; kept
+			// in its own file so failures aren't misattributed. compound_identifier was introduced in 3.9.0.
+			name:      "empty string-array field on an enterprise plugin",
+			stateFile: "testdata/diff/010-empty-array-plugin-config/kong-enterprise-string-arrays.yaml",
+			runWhen:   func(t *testing.T) { runWhen(t, "enterprise", ">=3.9.0") },
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.runWhen(t)
+
+			// Check if running against Konnect for dual testing
+			isKonnect := os.Getenv("DECK_KONNECT_TOKEN") != ""
+
+			if isKonnect {
+				runDualTestWithSkipDefaults(t, tc.name, func(t *testing.T) {
+					testDiffEmptyArrayPluginConfigNoPerpetualDiffImpl(ctx, t, tc.stateFile)
+				})
+			} else {
+				// for enterprise run once
+				testDiffEmptyArrayPluginConfigNoPerpetualDiffImpl(ctx, t, tc.stateFile)
+			}
+		})
+	}
+}
+
+func testDiffEmptyArrayPluginConfigNoPerpetualDiffImpl(ctx context.Context, t *testing.T, stateFile string) {
+	setup(t)
+
+	require.NoError(t, sync(ctx, stateFile))
+
+	out, err := diff(stateFile)
+	require.NoError(t, err)
+	require.Equal(t, emptyOutput, out, "empty array config must not produce a perpetual plugin diff")
+}
+
+// Test_Diff_EmptyArrayPluginConfig_RealChangeStillDetected guards the other direction: normalizing empty arrays
+// must not swallow a genuine change from an empty array to a populated one.
+func Test_Diff_EmptyArrayPluginConfig_RealChangeStillDetected(t *testing.T) {
+	// the fixtures set plugin instance_name, which Kong only supports from 3.2.0.
+	runWhenKongOrKonnect(t, ">=3.2.0")
+
+	// Check if running against Konnect for dual testing
+	isKonnect := os.Getenv("DECK_KONNECT_TOKEN") != ""
+
+	if isKonnect {
+		runDualTestWithSkipDefaults(t, "Test_Diff_EmptyArrayPluginConfig_RealChangeStillDetected",
+			testDiffEmptyArrayPluginConfigRealChangeStillDetectedImpl)
+	} else {
+		// for enterprise run once
+		testDiffEmptyArrayPluginConfigRealChangeStillDetectedImpl(t)
+	}
+}
+
+func testDiffEmptyArrayPluginConfigRealChangeStillDetectedImpl(t *testing.T) {
+	setup(t)
+	ctx := context.Background()
+
+	require.NoError(t, sync(ctx, "testdata/diff/010-empty-array-plugin-config/kong.yaml"))
+
+	out, err := diff("testdata/diff/010-empty-array-plugin-config/kong-populated.yaml")
+	require.NoError(t, err)
+	assert.NotEqual(t, emptyOutput, out)
+	assert.Contains(t, out, "updating plugin zipkin")
+
+	// once applied, the populated state diffs clean
+	require.NoError(t, sync(ctx, "testdata/diff/010-empty-array-plugin-config/kong-populated.yaml"))
+
+	out, err = diff("testdata/diff/010-empty-array-plugin-config/kong-populated.yaml")
+	require.NoError(t, err)
+	assert.Equal(t, emptyOutput, out)
+
+	// the reverse direction (populated -> []) is the one normalization could swallow, it must be
+	// reported and must diff clean
+	out, err = diff("testdata/diff/010-empty-array-plugin-config/kong.yaml")
+	require.NoError(t, err)
+	assert.NotEqual(t, emptyOutput, out, "populated -> [] must still be reported")
+	assert.Contains(t, out, "updating plugin zipkin")
+
+	require.NoError(t, sync(ctx, "testdata/diff/010-empty-array-plugin-config/kong.yaml"))
+
+	out, err = diff("testdata/diff/010-empty-array-plugin-config/kong.yaml")
+	require.NoError(t, err)
+	assert.Equal(t, emptyOutput, out)
+}
+
+// Test_Diff_EmptyArrayPluginConfig_OmittedFieldMatchesEmptyArray pins down that omitting an array field entirely
+// is indistinguishable from setting it to [], since decK fills both sides with nil before comparing.
+//
+// NOTE: Deliberately NOT wrapped in runDualTestWithSkipDefaults, unlike the two tests above. That helper runs the same
+// body twice to assert a behavior is invariant across DECK_SKIP_DEFAULTS_FILL; the behavior pinned here is
+// precisely the one that is *not* invariant. Schema-default filling is what turns an omitted array field into an
+// explicit nil, which is what then compares equal to the [] the gateway stores. Skip the filling and the omitted
+// field stays absent, the distinction survives, and diff correctly reports one update (verified against Konnect:
+// the update is real, it writes null over the stored [], and converges once applied). Asserting emptyOutput under
+// both modes therefore fails the skip-defaults run. Branching the assertion on the env var inside a single body
+// would defeat the point of the helper, so the skip-defaults semantics are pinned by their own test instead.
+func Test_Diff_EmptyArrayPluginConfig_OmittedFieldMatchesEmptyArray(t *testing.T) {
+	// the fixtures set plugin instance_name, which Kong only supports from 3.2.0.
+	runWhenKongOrKonnect(t, ">=3.2.0")
+	setup(t)
+	ctx := context.Background()
+
+	require.NoError(t, sync(ctx, "testdata/diff/010-empty-array-plugin-config/kong.yaml"))
+
+	out, err := diff("testdata/diff/010-empty-array-plugin-config/kong-omitted.yaml")
+	require.NoError(t, err)
+	assert.Equal(t, emptyOutput, out)
+}
+
+func Test_Diff_SkipDefaults_PluginEnabled_NoPerpetualDiff(t *testing.T) {
+	runWhenKonnect(t)
+	setDefaultKonnectControlPlane(t)
+
+	runDualTestWithSkipDefaults(t, "Test_Diff_SkipDefaults_PluginEnabled_NoPerpetualDiff",
+		testDiffSkipDefaultsPluginEnabledNoPerpetualDiffImpl)
+}
+
+func testDiffSkipDefaultsPluginEnabledNoPerpetualDiffImpl(t *testing.T) {
+	setup(t)
+	ctx := context.Background()
+
+	stateFile := "testdata/diff/011-skip-defaults-plugin-implicit-enabled/kong.yaml"
+
+	require.NoError(t, sync(ctx, stateFile))
+
+	out, err := diff(stateFile)
+	require.NoError(t, err)
+	require.Equal(t, emptyOutput, out,
+		"omitted enabled must not produce a perpetual plugin diff")
+}
+
+func Test_Diff_SkipDefaults_PluginEnabled_ValidChangeDetected(t *testing.T) {
+	runWhenKonnect(t)
+	setDefaultKonnectControlPlane(t)
+
+	runDualTestWithSkipDefaults(t, "Test_Diff_SkipDefaults_PluginEnabled_ValidChangeDetected",
+		testDiffSkipDefaultsPluginEnabledValidChangeDetectedImpl)
+}
+
+func testDiffSkipDefaultsPluginEnabledValidChangeDetectedImpl(t *testing.T) {
+	setup(t)
+	ctx := context.Background()
+
+	require.NoError(t, sync(ctx, "testdata/diff/011-skip-defaults-plugin-implicit-enabled/kong.yaml"))
+
+	out, err := diff("testdata/diff/011-skip-defaults-plugin-implicit-enabled/kong-updated.yaml")
+	require.NoError(t, err)
+	assert.NotEqual(t, emptyOutput, out)
+	assert.Contains(t, out, "updating plugin post-function")
+	assert.Contains(t, out, "MASKED")
+
+	// once applied, the updated state diffs clean
+	require.NoError(t, sync(ctx, "testdata/diff/011-skip-defaults-plugin-implicit-enabled/kong-updated.yaml"))
+
+	out, err = diff("testdata/diff/011-skip-defaults-plugin-implicit-enabled/kong-updated.yaml")
+	require.NoError(t, err)
+	assert.Equal(t, emptyOutput, out)
+}
+
+func Test_Diff_SkipDefaults_PluginDeprecatedField_NoPerpetualDiff(t *testing.T) {
+	runWhenKonnect(t)
+	setDefaultKonnectControlPlane(t)
+
+	runDualTestWithSkipDefaults(t, "Test_Diff_SkipDefaults_PluginDeprecatedField_NoPerpetualDiff",
+		testDiffSkipDefaultsPluginDeprecatedFieldNoPerpetualDiffImpl)
+}
+
+func testDiffSkipDefaultsPluginDeprecatedFieldNoPerpetualDiffImpl(t *testing.T) {
+	setup(t)
+	ctx := context.Background()
+
+	stateFile := "testdata/diff/012-skip-defaults-plugin-deprecated-field/kong.yaml"
+
+	require.NoError(t, sync(ctx, stateFile))
+
+	out, err := diff(stateFile)
+	require.NoError(t, err)
+	require.Equal(t, emptyOutput, out,
+		"unmatched deprecated field must not produce a perpetual plugin diff")
+}
+
+func Test_Diff_SkipDefaults_PluginDeprecatedField_ValidChangeDetected(t *testing.T) {
+	runWhenKonnect(t)
+	setDefaultKonnectControlPlane(t)
+
+	runDualTestWithSkipDefaults(t, "Test_Diff_SkipDefaults_PluginDeprecatedField_ValidChangeDetected",
+		testDiffSkipDefaultsPluginDeprecatedFieldValidChangeDetectedImpl)
+}
+
+func testDiffSkipDefaultsPluginDeprecatedFieldValidChangeDetectedImpl(t *testing.T) {
+	setup(t)
+	ctx := context.Background()
+
+	require.NoError(t, sync(ctx, "testdata/diff/012-skip-defaults-plugin-deprecated-field/kong.yaml"))
+
+	out, err := diff("testdata/diff/012-skip-defaults-plugin-deprecated-field/kong-updated.yaml")
+	require.NoError(t, err)
+	assert.NotEqual(t, emptyOutput, out)
+	assert.Contains(t, out, "updating plugin openid-connect")
+	assert.Contains(t, out, "changed-issuer.example.com")
+
+	// once applied, the updated state diffs clean
+	require.NoError(t, sync(ctx, "testdata/diff/012-skip-defaults-plugin-deprecated-field/kong-updated.yaml"))
+
+	out, err = diff("testdata/diff/012-skip-defaults-plugin-deprecated-field/kong-updated.yaml")
+	require.NoError(t, err)
+	assert.Equal(t, emptyOutput, out)
+}
+
+func Test_Diff_Konnect_Workspace(t *testing.T) {
+	runWhenKonnect(t)
+	setup(t)
+	ctx := context.Background()
+
+	tests := []struct {
+		name             string
+		initialStateFile string
+		stateFile        string
+		isDiffExpected   bool
+		expectedDiff     string
+		expectedContains []string
+	}{
+		{
+			name:             "create konnect workspace with entity creation",
+			initialStateFile: "testdata/diff/007-konnect-workspace/konnect-workspace.yaml",
+			stateFile:        "testdata/diff/007-konnect-workspace/konnect-workspace-entity-creation.yaml",
+			isDiffExpected:   true,
+			expectedDiff:     expectedKonnectWorkspaceEntityCreationDiff,
+		},
+		{
+			name:             "create konnect workspace with existing entity deletion and new entity creation",
+			initialStateFile: "testdata/diff/007-konnect-workspace/konnect-workspace-entity-creation.yaml",
+			stateFile:        "testdata/diff/007-konnect-workspace/konnect-workspace-entity-creation-deletion.yaml",
+			isDiffExpected:   true,
+			expectedDiff:     expectedKonnectWorkspaceCreationDeletionDiff,
+		},
+		{
+			name:             "update single entity in konnect workspace",
+			initialStateFile: "testdata/diff/007-konnect-workspace/konnect-workspace-entity-creation.yaml",
+			stateFile:        "testdata/diff/007-konnect-workspace/konnect-workspace-update-entity.yaml",
+			isDiffExpected:   true,
+			expectedContains: []string{
+				"updating route route-diff1",
+				`-  "https_redirect_status_code": 301`,
+				`+  "https_redirect_status_code": 426`,
+				`-    "/route-diff1"`,
+				`+    "/route-diff1-updated"`,
+				"Updated: 1",
+			},
+		},
+		{
+			name:             "empty state file should show deletion of all entities",
+			initialStateFile: "testdata/diff/007-konnect-workspace/konnect-workspace-entity-creation.yaml",
+			stateFile:        "testdata/diff/007-konnect-workspace/konnect-workspace.yaml",
+			isDiffExpected:   true,
+			expectedDiff:     expectedKonnectWorkspaceEmptyStateDiff,
+		},
+		{
+			name:             "workspace mismatch - different workspace name should create new workspace",
+			initialStateFile: "testdata/diff/007-konnect-workspace/konnect-workspace-entity-creation.yaml",
+			stateFile:        "testdata/diff/007-konnect-workspace/konnect-workspace-mismatch.yaml",
+			isDiffExpected:   true,
+			expectedDiff:     expectedKonnectWorkspaceMismatchDiff,
+		},
+		{
+			name:             "idempotency - no diff after sync",
+			initialStateFile: "testdata/diff/007-konnect-workspace/konnect-workspace-idempotent.yaml",
+			stateFile:        "testdata/diff/007-konnect-workspace/konnect-workspace-idempotent.yaml",
+			isDiffExpected:   false,
+		},
+		{
+			name:             "diff multiple entities in a single file",
+			initialStateFile: "testdata/diff/007-konnect-workspace/konnect-workspace-with-multiple-entities.yaml",
+			stateFile:        "testdata/diff/007-konnect-workspace/konnect-workspace-with-multiple-entities-updated.yaml",
+			isDiffExpected:   true,
+			expectedContains: []string{
+				"updating route route-multi-entity-1",
+				"updating consumer-group silver",
+				"updating consumer test_consumer_3x",
+				"updating key-set test-key-set",
+				"updating key test-key-jwk",
+				"creating route route-multi-entity-3",
+				"deleting route route-multi-entity-2",
+				"Created: 4",
+				"Updated: 6",
+				"Deleted: 4",
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			reset(t)
+			if tc.initialStateFile != "" {
+				require.NoError(t, sync(ctx, tc.initialStateFile))
+			}
+			out, err := diff(tc.stateFile)
+			require.NoError(t, err)
+			if tc.expectedContains != nil {
+				// Use contains-based comparison for diffs with dynamic fields
+				for _, expected := range tc.expectedContains {
+					assert.Contains(t, out, expected, "expected output to contain: %s", expected)
+				}
+			} else if tc.isDiffExpected {
+				assert.Equal(t, tc.expectedDiff, out)
+			} else {
+				assert.Equal(t, emptyOutput, out)
+			}
+		})
+	}
+}
+
+// Test_RequestTermination_Dump_Diff ensures that a create-via-API → dump → diff
+// round-trip produces zero changes. This is a regression test for a bug where
+// YAML-wrapped continuation lines starting with '#'
+// were incorrectly stripped by renderTemplate, causing spurious diffs.
+//
+// test scope:
+//   - kong >=3.0.0
+func Test_RequestTermination_Dump_Diff(t *testing.T) {
+	runWhen(t, "kong", ">=3.0.0")
+	setup(t)
+
+	ctx := context.Background()
+
+	client, err := getTestClient()
+	require.NoError(t, err)
+
+	body := `{"email":[{"subject":"Lion Rock","htmlemail":"<html><head><style>` +
+		`body { color: #4c4c4c; background-color: #ebeced; font-size: 14px; }` +
+		` .header { background-color: #006564; }` +
+		` .border { border-left: 8px solid #1B3668; border: 1px solid #BCBEC0; }` +
+		` .footer a { color: #116F9A; }` +
+		`</style></head><body>Lion Rock Business Class Lounge Pass cancellation.` +
+		`</body></html>","textemail":""}],"sms":"","errors":null}`
+
+	// Step 1: Create the plugin via the Kong Admin API, simulating a plugin
+	// created through Kong Manager UI (pristine body, no prior YAML round-trip).
+	createdPlugin, err := client.Plugins.Create(ctx, &kong.Plugin{
+		Name:    kong.String("request-termination"),
+		Enabled: kong.Bool(true),
+		Config: kong.Configuration{
+			"status_code":  float64(200),
+			"body":         body,
+			"content_type": "application/json",
+			"echo":         false,
+			"message":      nil,
+			"trigger":      nil,
+		},
+		Protocols: kong.StringSlice("grpc", "grpcs", "http", "https"),
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		if createdPlugin != nil && createdPlugin.ID != nil {
+			_ = client.Plugins.Delete(ctx, createdPlugin.ID)
+		}
+	})
+
+	tmpFile, err := os.CreateTemp("", "deck-rt-dump-*.yaml")
+	require.NoError(t, err)
+	tmpFile.Close()
+	require.NoError(t, os.Remove(tmpFile.Name()))
+	t.Cleanup(func() { os.Remove(tmpFile.Name()) }) // no-op if dump already wrote it
+
+	_, err = dump("-o", tmpFile.Name())
+	require.NoError(t, err)
+
+	diffOut, err := diff(tmpFile.Name())
+	require.NoError(t, err)
+	assert.Contains(t, diffOut, "Created: 0",
+		"expected no diff between Kong state and the dumped file, got:\n%s", diffOut)
+	assert.Contains(t, diffOut, "Updated: 0",
+		"expected no diff between Kong state and the dumped file, got:\n%s", diffOut)
+	assert.Contains(t, diffOut, "Deleted: 0",
+		"expected no diff between Kong state and the dumped file, got:\n%s", diffOut)
+}
+
+// Environment variables with short values that could cause false positives
+var maskingFixEnvVars = map[string]string{
+	"DECK_REDIS_DB":       "0",
+	"DECK_SYNC_RATE":      "1",
+	"DECK_RETRIES":        "5",
+	"DECK_SERVICE_HOST":   "example.com",
+	"DECK_REGEX_PRIORITY": "0",
+	"DECK_RATE_LIMIT":     "100",
+}
+
+// Test_Diff_Masking_ShortValues_NoCorruption verifies that short env var values
+// like "0", "1", "5" don't corrupt UUIDs or other unrelated values.
+// test scope:
+//   - 3.x
+func Test_Diff_Masking_ShortValues_NoCorruption(t *testing.T) {
+	runWhen(t, "kong", ">=3.0.0")
+	setup(t)
+
+	for k, v := range maskingFixEnvVars {
+		t.Setenv(k, v)
+	}
+
+	ctx := context.Background()
+
+	require.NoError(t, sync(ctx, "testdata/diff/009-mask-short-values/initial.yaml"))
+
+	out, err := diff("testdata/diff/009-mask-short-values/kong.yaml")
+	require.NoError(t, err)
+
+	assert.Contains(t, out, "b35b3ec2-fa1c-4f6c-825e-c38141562c76",
+		"UUID should not be corrupted by short env var values")
+	assert.Contains(t, out, "a1234567-89ab-cdef-0123-456789abcdef",
+		"UUID should not be corrupted by short env var values")
+
+	assert.NotContains(t, out, "[masked]3ec",
+		"The '0' in UUID should not cause substring masking")
+	assert.NotContains(t, out, "b35b3ec[masked]",
+		"The '2' in UUID should not cause substring masking")
+}
+
+// Test_Diff_Masking_JSONOutput_ValidJSON verifies that when integers are masked,
+// the JSON output remains valid (masked values are properly quoted).
+// test scope:
+//   - 3.x
+func Test_Diff_Masking_JSONOutput_ValidJSON(t *testing.T) {
+	runWhen(t, "kong", ">=3.0.0")
+	setup(t)
+
+	for k, v := range maskingFixEnvVars {
+		t.Setenv(k, v)
+	}
+
+	ctx := context.Background()
+
+	require.NoError(t, sync(ctx, "testdata/diff/009-mask-short-values/initial.yaml"))
+
+	out, err := diff("testdata/diff/009-mask-short-values/kong.yaml", "--json-output")
+	require.NoError(t, err)
+
+	assert.NotEmpty(t, out, "JSON output should not be empty")
+
+	if strings.Contains(out, "[masked]") {
+		assert.Contains(t, out, `"[masked]"`,
+			"Masked values in JSON should be quoted strings")
+	}
+
+	assert.Contains(t, out, "b35b3ec2-fa1c-4f6c-825e-c38141562c76",
+		"UUID should not be corrupted in JSON output")
+}
+
+// Test_Diff_Masking_ExactValueMatch verifies that masking uses exact value matching,
+// not substring matching. A value like "100" should NOT be masked just because
+// DECK_REDIS_DB=0 (the "0" in "100" should not trigger masking).
+// test scope:
+//   - 3.x
+func Test_Diff_Masking_ExactValueMatch(t *testing.T) {
+	runWhen(t, "kong", ">=3.0.0")
+	setup(t)
+
+	for k, v := range maskingFixEnvVars {
+		t.Setenv(k, v)
+	}
+
+	ctx := context.Background()
+
+	require.NoError(t, sync(ctx, "testdata/diff/009-mask-short-values/initial.yaml"))
+
+	out, err := diff("testdata/diff/009-mask-short-values/kong.yaml")
+	require.NoError(t, err)
+
+	assert.Contains(t, out, "60000",
+		"Timeout value should not be masked - '0' in '60000' is not an exact match")
+
+	assert.Contains(t, out, "8080",
+		"Port value should not be masked - '0' in '8080' is not an exact match")
+}
+
+// Test_Sync_Masking_ValidJSON verifies that sync command with --json-output
+// produces valid JSON when env var values include integers.
+// test scope:
+//   - 3.x
+func Test_Sync_Masking_ValidJSON(t *testing.T) {
+	runWhen(t, "kong", ">=3.0.0")
+	setup(t)
+
+	for k, v := range maskingFixEnvVars {
+		t.Setenv(k, v)
+	}
+
+	ctx := context.Background()
+
+	require.NoError(t, sync(ctx, "testdata/diff/009-mask-short-values/initial.yaml"))
+
+	out, err := diff("testdata/diff/009-mask-short-values/kong.yaml", "--json-output")
+	require.NoError(t, err)
+
+	if strings.Contains(out, "masked") {
+		assert.NotRegexp(t, `:\s*\[masked\][^"]`, out,
+			"Masked integer values should be quoted in JSON output")
+	}
+}

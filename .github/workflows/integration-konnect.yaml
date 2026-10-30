@@ -1,0 +1,41 @@
+name: Konnect Integration Test
+
+concurrency:
+  # Only run one workflow at a time. Konnect integration tests cannot be run in parallel
+  # as they rely on manifests with static identifiers and/or names that would conflict
+  # if run in parallel.
+  # Ref: https://docs.github.com/en/actions/using-jobs/using-concurrency
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+jobs:
+  integration:
+    # Skip if the PR has the 'skip-konnect' label
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'skip-konnect') }}
+    timeout-minutes: ${{ fromJSON(vars.DECK_WORKFLOW_KONNECT_TIMEOUT || '10') }}
+    env:
+      KONG_ANONYMOUS_REPORTS: "off"
+      DECK_KONNECT_EMAIL : ${{ secrets.DECK_KONNECT_EMAIL }}
+      DECK_KONNECT_PASSWORD : ${{ secrets.DECK_KONNECT_PASSWORD }}
+      DECK_KONNECT_ADDR : ${{ secrets.DECK_KONNECT_ADDR }}
+      DECK_KONNECT_TOKEN : ${{ secrets.DECK_KONNECT_TOKEN }}
+      DECK_TIMEOUT: ${{ vars.DECK_TIMEOUT || '60' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
+        with:
+          egress-policy: audit
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Setup go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Run integration tests
+        # DECK_WORKFLOW_KONNECT_TIMEOUT is a plain number of minutes (used for timeout-minutes above), append 'm' for go test -timeout.
+        run: make test-integration TEST_TIMEOUT=${{ vars.DECK_WORKFLOW_KONNECT_TIMEOUT || '20' }}m

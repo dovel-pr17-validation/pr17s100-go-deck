@@ -1,0 +1,62 @@
+universal_binaries:
+- replace: true
+builds:
+- id: deck
+  env:
+  - CGO_ENABLED=0
+  goos:
+  - linux
+  - darwin
+  - windows
+  - freebsd
+  goarch:
+  - amd64
+  - arm64
+  ignore:
+    - goos: freebsd
+      goarch: arm64
+    - goos: windows
+      goarch: arm64
+  flags:
+  - -trimpath
+  ldflags:
+  - -s -w -X github.com/kong/deck/cmd.VERSION={{ .Tag }} -X github.com/kong/deck/cmd.COMMIT={{ .ShortCommit }}
+notarize:
+  macos:
+    - enabled: '{{ isEnvSet "APPLE_SIGNING_CERTIFICATE_P12_BASE64" }}'
+      ids:
+        - deck
+      sign:
+        certificate: "{{.Env.APPLE_SIGNING_CERTIFICATE_P12_BASE64}}"
+        password: "{{.Env.APPLE_SIGNING_CERTIFICATE_PASSWORD}}"
+      notarize:
+        issuer_id: "{{.Env.APPLE_NOTARY_API_ISSUER_ID}}"
+        key_id: "{{.Env.APPLE_NOTARY_API_KEY_ID}}"
+        key: "{{.Env.APPLE_NOTARY_API_PRIVATE_KEY_BASE64}}"
+        wait: true
+        timeout: 5m
+checksum:
+  name_template: 'checksums.txt'
+snapshot:
+  name_template: "{{ .Tag }}"
+nfpms:
+- file_name_template: '{{ .ProjectName }}_{{ .Tag }}_{{ .Arch }}'
+  homepage: https://github.com/kong/deck
+  description: Declarative configuration for Kong
+  maintainer: Harry Bagdi <harrybagdi@gmail.com>
+  license: Apache License v2.0
+  formats:
+  - deb
+  - rpm
+brews:
+- tap:
+    owner: kong
+    name: homebrew-deck
+  commit_author:
+    name: Harry Bagdi
+    email: harrybagdi@gmail.com
+  homepage: "https://github.com/kong/deck"
+  description: Declarative configuration for Kong
+  skip_upload: true
+  test: |
+      system "#{bin}/deck", "version"

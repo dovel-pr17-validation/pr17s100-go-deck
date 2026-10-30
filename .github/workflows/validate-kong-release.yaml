@@ -1,0 +1,54 @@
+name: Validate Kong Gateway Release
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.kong_image }}-${{ inputs.branch }}
+on:
+  workflow_dispatch:
+    inputs:
+      kong_image:
+        description: 'Kong Gateway Docker Image'
+        required: true
+        default: 'kong/kong-gateway-dev:latest'
+      branch:
+        description: 'decK Branch'
+        required: true
+        default: 'main'
+jobs:
+  integration:
+    timeout-minutes: ${{ fromJSON(vars.DECK_WORKFLOW_GW_TIMEOUT) }}
+    name: "${{ inputs.kong_image }} against ${{ inputs.branch }}"
+    env:
+      KONG_ANONYMOUS_REPORTS: "off"
+      KONG_IMAGE: ${{ inputs.kong_image }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
+        with:
+          egress-policy: audit
+      - name: Execution Information
+        env:
+          KONG_IMAGE_INPUT: ${{ inputs.kong_image }}
+          BRANCH_INPUT: ${{ inputs.branch }}
+        run: |
+          echo "Kong Gateway Image = $KONG_IMAGE_INPUT"
+          echo "decK Branch = $BRANCH_INPUT"
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.branch }}
+      - name: Setup go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: Kong/kong-license@ddccb487a0b319cef85f348b16a1ad2b6d9c1df7 # master
+        id: license
+        with:
+          op-token: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+      - name: Setup Kong
+        env:
+          KONG_LICENSE_DATA: ${{ steps.license.outputs.license }}
+        run: make setup-kong-ee
+      - name: Run integration tests
+        env:
+          KONG_LICENSE_DATA: ${{ steps.license.outputs.license }}
+        run: make test-integration
